@@ -6,10 +6,28 @@ import asyncio
 from datetime import timedelta
 
 import aiohttp
+from aiosocks2.connector import ProxyConnector, ProxyClientRequest
 
 from pyfuelprices.sources import Source, geocode_reverse_lookup
 from pyfuelprices.sources.mapping import SOURCE_MAP, COUNTRY_MAP
-from .const import PROP_FUEL_LOCATION_SOURCE
+from .const import (
+    PROP_FUEL_LOCATION_SOURCE,
+    MODULE_CONFIG_CONFIGURED_AREAS,
+    MODULE_CONFIG_COUNTRY_CODE,
+    MODULE_CONFIG_ENABLED_SOURCES,
+    MODULE_CONFIG_PROXY_LIST,
+    MODULE_CONFIG_SOURCE_OPTIONS,
+    MODULE_CONFIG_TIMEOUT,
+    MODULE_CONFIG_UPDATE_INTERVAL,
+    DEF_MODULE_CONFIG,
+    DEF_MODULE_CONFIG_CONFIGURED_AREAS,
+    DEF_MODULE_CONFIG_COUNTRY_CODE,
+    DEF_MODULE_CONFIG_ENABLED_SOURCES,
+    DEF_MODULE_CONFIG_PROXY_LIST,
+    DEF_MODULE_CONFIG_SOURCE_OPTIONS,
+    DEF_MODULE_CONFIG_TIMEOUT,
+    DEF_MODULE_CONFIG_UPDATE_INTERVAL
+)
 from .fuel_locations import FuelLocation
 
 _LOGGER = logging.getLogger(__name__)
@@ -107,31 +125,38 @@ class FuelPrices:
 
     @classmethod
     def create(cls,
-               enabled_sources: list[str] = None,
-               update_interval: timedelta = timedelta(days=1),
-               country_code: str = "",
-               configured_areas: list[dict] = None,
-               timeout: timedelta = timedelta(seconds=30)
+               config: dict = None
             ) -> 'FuelPrices':
         """Start an instance of fuel prices."""
+        config = DEF_MODULE_CONFIG if config is None else config
+        source_args = config.get(MODULE_CONFIG_SOURCE_OPTIONS, DEF_MODULE_CONFIG_SOURCE_OPTIONS)
         self = cls()
-        self.configured_areas = configured_areas
+        self.configured_areas = config.get(
+            MODULE_CONFIG_CONFIGURED_AREAS, DEF_MODULE_CONFIG_CONFIGURED_AREAS)
         self.client_session = aiohttp.ClientSession(
-            connector=aiohttp.TCPConnector(
+            connector=ProxyConnector(
+                remote_resolve=True,
                 use_dns_cache=True,
                 ttl_dns_cache=360
             ),
+            request_class=ProxyClientRequest,
             timeout=aiohttp.ClientTimeout(
-                total=timeout.seconds
+                total=config.get(MODULE_CONFIG_TIMEOUT, DEF_MODULE_CONFIG_TIMEOUT).seconds
             )
         )
+        enabled_sources = config.get(
+            MODULE_CONFIG_ENABLED_SOURCES, DEF_MODULE_CONFIG_ENABLED_SOURCES)
+        update_interval = config.get(
+            MODULE_CONFIG_UPDATE_INTERVAL, DEF_MODULE_CONFIG_UPDATE_INTERVAL)
+        country_code = config.get(MODULE_CONFIG_COUNTRY_CODE, DEF_MODULE_CONFIG_COUNTRY_CODE)
         if enabled_sources is not None:
             for src in enabled_sources:
                 if str(src) not in SOURCE_MAP:
                     raise ValueError(f"Source {src} is not valid for this application.")
                 self.configured_sources[src] = (
                     SOURCE_MAP.get(str(src))(update_interval=update_interval,
-                                             client_session=self.client_session)
+                                             client_session=self.client_session,
+                                             options=source_args.get(src, {}))
                 )
         if enabled_sources is None:
             def_sources = {}
@@ -140,7 +165,8 @@ class FuelPrices:
             for src in def_sources:
                 self.configured_sources[src] = (
                     SOURCE_MAP.get(str(src))(update_interval=update_interval,
-                                             client_session=self.client_session)
+                                             client_session=self.client_session,
+                                             options=source_args.get(src, {}))
                 )
 
         return self

@@ -13,12 +13,20 @@ from geopy import (
     exc as geopyexc
 )
 import aiohttp
+from aiosocks2.connector import ProxyConnector
 
 from pyfuelprices.const import (
     PROP_FUEL_LOCATION_PREVENT_CACHE_CLEANUP,
     PROP_AREA_LAT,
     PROP_AREA_LONG,
-    PROP_AREA_RADIUS
+    PROP_AREA_RADIUS,
+    SOURCE_CONFIG_API_KEY,
+    SOURCE_CONFIG_PROXY_ENABLE,
+    SOURCE_CONFIG_PROXY_HOST,
+    SOURCE_CONFIG_PROXY_PASSWORD,
+    SOURCE_CONFIG_PROXY_PORT,
+    SOURCE_CONFIG_PROXY_PROTOCOL,
+    SOURCE_CONFIG_PROXY_USERNAME,
 )
 from pyfuelprices.fuel_locations import FuelLocation, Fuel
 from pyfuelprices._version import __version__ as VERSION
@@ -50,9 +58,13 @@ class Source:
 
     def __init__(self,
                  update_interval: timedelta = timedelta(days=1),
-                 client_session: aiohttp.ClientSession = None) -> None:
+                 client_session: aiohttp.ClientSession = None,
+                 options: dict = None,
+                 proxy_list_url: str = None) -> None:
         """Start a new instance of a source."""
         self.update_interval = update_interval
+        self.options = options
+        self._proxy_list_url = proxy_list_url
         self._client_session: aiohttp.ClientSession = client_session
         if client_session is None:
             self._client_session = aiohttp.ClientSession(
@@ -62,6 +74,27 @@ class Source:
             self._client_session = client_session
         if self.next_update is None:
             self.next_update = datetime.now()
+
+    @final
+    async def _proxy_url(self) -> str | None:
+        """Return configured proxy if set."""
+        if self.options.get(SOURCE_CONFIG_PROXY_ENABLE, False):
+            if SOURCE_CONFIG_PROXY_HOST in self.options:
+                return (
+                    f"{self.options[SOURCE_CONFIG_PROXY_PROTOCOL]}://"
+                    f"{self.options[SOURCE_CONFIG_PROXY_USERNAME]}:"
+                    f"{self.options[SOURCE_CONFIG_PROXY_PASSWORD]}@"
+                    f"{self.options[SOURCE_CONFIG_PROXY_HOST]}:"
+                    f"{self.options[SOURCE_CONFIG_PROXY_PORT]}")
+            # logic to dynamically get proxy
+            data = await self._client_session.request(
+                method="GET",
+                url=self._proxy_list_url
+            )
+            if data.ok:
+                # build proxy from latest server
+                data = await data.json()
+        return None
 
     @final
     def _check_if_coord_in_area(self, coordinates) -> bool:
@@ -105,6 +138,7 @@ class Source:
         self._clear_cache()
         if self.next_update <= datetime.now() or force:
             response = await self._client_session.request(
+                proxy=(await self._proxy_url()),
                 method=self._method,
                 url=self._url,
                 json=self._request_body,
